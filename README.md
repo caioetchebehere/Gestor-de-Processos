@@ -9,7 +9,7 @@ Aplicação web para cadastro e acompanhamento de processos e etapas, com tabela
 - Status por etapa.
 - Gráfico de evolução do processo.
 - Exportação e importação de dados em JSON (gravação no servidor após importar).
-- **Persistência em Redis (Upstash)** via API na Vercel — não usa `localStorage`.
+- **Persistência no servidor** via API na Vercel usando **Vercel Blob** (ficheiro JSON) — não usa `localStorage` nem outra integração.
 - **Upload de arquivos** por processo (armazenamento Vercel Blob); links públicos para download.
 
 ## Estrutura do projeto
@@ -17,9 +17,9 @@ Aplicação web para cadastro e acompanhamento de processos e etapas, com tabela
 - `index.html`: interface.
 - `styles.css`: estilos.
 - `app.js`: lógica e chamadas a `/api/state` e `/api/upload`.
-- `api/state.js`: leitura/gravação do estado JSON no Upstash Redis.
+- `api/state.js`: leitura/gravação do estado JSON no Vercel Blob.
 - `api/upload.js`: envio de arquivos para Vercel Blob.
-- `package.json`: dependências `@upstash/redis` e `@vercel/blob`.
+- `package.json`: dependência `@vercel/blob`.
 
 ## Variáveis de ambiente (Vercel)
 
@@ -27,21 +27,19 @@ No painel do projeto: **Settings → Environment Variables**:
 
 | Variável | Onde obter |
 |----------|------------|
-| `UPSTASH_REDIS_REST_URL` | Integração [Redis](https://vercel.com/marketplace?category=storage&search=redis) (Upstash) na Vercel — copiar da integração. |
-| `UPSTASH_REDIS_REST_TOKEN` | Idem. |
-| `BLOB_READ_WRITE_TOKEN` | Criar um store em [Vercel Blob](https://vercel.com/docs/storage/vercel-blob) e associar ao projeto (a variável costuma ser preenchida automaticamente). |
+| `BLOB_READ_WRITE_TOKEN` | Obrigatório: criar um store em [Vercel Blob](https://vercel.com/docs/storage/vercel-blob) e ligar ao projeto — a variável costuma ser criada automaticamente. O estado da app grava-se num JSON no Blob e os uploads de anexos usam o mesmo token. |
 
-Sem Redis configurado, `/api/state` responde 503 e a interface mostra aviso (dados de exemplo só em memória até a gravação funcionar).
+Se `BLOB_READ_WRITE_TOKEN` não estiver definido, `/api/state` responde 503.
 
 ## Deploy na Vercel
 
 1. Envie o código para um repositório Git (GitHub, etc.).
 2. **Add New Project** na Vercel e importe o repositório.
 3. **Framework Preset**: Other (ou detecta `package.json`).
-4. Adicione as variáveis de ambiente acima (Redis + Blob).
+4. Adicione a variável de ambiente `BLOB_READ_WRITE_TOKEN`.
 5. Faça o deploy.
 
-Após o primeiro acesso com Redis vazio, a aplicação cria o processo de exemplo e grava no Redis.
+Após o primeiro acesso sem estado salvo, a aplicação cria o processo de exemplo e grava no Blob.
 
 ## Execução local
 
@@ -57,5 +55,5 @@ Abra o endereço indicado no terminal (as rotas `/api/*` não funcionam com `pyt
 ## Observações
 
 - **Segurança**: qualquer visitante pode alterar dados e enviar arquivos. Para uso interno restrito, coloque o site atrás de autenticação (por exemplo Vercel Authentication, SSO da empresa ou VPN).
-- O estado é um único documento JSON no Redis; gravações muito simultâneas usam “último gravação vence”.
+- O estado é um único documento JSON no Blob; gravações muito simultâneas usam “última gravação vence”.
 - A interface consulta o servidor a cada ~12 s para refletir alterações de outros usuários (e ao voltar para a aba).

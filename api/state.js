@@ -1,12 +1,9 @@
-import { Redis } from '@upstash/redis';
+import { list, put } from '@vercel/blob';
 
-const KEY = 'gestao-processos:estado';
+const BLOB_STATE_PATH = 'gestao-processos/app-state.json';
 
-function getRedis() {
-  const url = process.env.UPSTASH_REDIS_REST_URL;
-  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
-  if (!url || !token) return null;
-  return new Redis({ url, token });
+function getBlobToken() {
+  return process.env.BLOB_READ_WRITE_TOKEN || null;
 }
 
 function json(body, status = 200) {
@@ -19,25 +16,44 @@ function json(body, status = 200) {
   });
 }
 
+async function lerEstadoBlob() {
+  const token = getBlobToken();
+  const { blobs } = await list({ prefix: 'gestao-processos/app-state', token, limit: 10 });
+  const blob = blobs.find(b => b.pathname === BLOB_STATE_PATH);
+  if (!blob) return null;
+  const res = await fetch(blob.downloadUrl);
+  if (!res.ok) return null;
+  return res.json();
+}
+
+async function gravarEstadoBlob(data) {
+  const token = getBlobToken();
+  await put(BLOB_STATE_PATH, JSON.stringify(data), {
+    access: 'public',
+    addRandomSuffix: false,
+    token,
+    contentType: 'application/json'
+  });
+}
+
 export async function GET() {
-  const redis = getRedis();
-  if (!redis) {
+  if (!getBlobToken()) {
     return json(
       {
-        error: 'REDIS_NOT_CONFIGURED',
-        message: 'Defina UPSTASH_REDIS_REST_URL e UPSTASH_REDIS_REST_TOKEN (integração Redis na Vercel).'
+        error: 'STORAGE_NOT_CONFIGURED',
+        message: 'Configure a variável BLOB_READ_WRITE_TOKEN no projeto para usar o Vercel Blob.'
       },
       503
     );
   }
   try {
-    const data = await redis.get(KEY);
+    const data = await lerEstadoBlob();
     return json(data ?? null);
   } catch (e) {
     console.error('[api/state GET]', e);
     return json(
       {
-        error: 'REDIS_UNAVAILABLE',
+        error: 'STORAGE_UNAVAILABLE',
         message: e instanceof Error ? e.message : String(e)
       },
       503
@@ -46,12 +62,11 @@ export async function GET() {
 }
 
 export async function POST(request) {
-  const redis = getRedis();
-  if (!redis) {
+  if (!getBlobToken()) {
     return json(
       {
-        error: 'REDIS_NOT_CONFIGURED',
-        message: 'Defina UPSTASH_REDIS_REST_URL e UPSTASH_REDIS_REST_TOKEN.'
+        error: 'STORAGE_NOT_CONFIGURED',
+        message: 'Configure a variável BLOB_READ_WRITE_TOKEN nas definições do projeto na Vercel.'
       },
       503
     );
@@ -66,13 +81,13 @@ export async function POST(request) {
     if (!body || typeof body !== 'object') {
       return json({ error: 'INVALID_BODY' }, 400);
     }
-    await redis.set(KEY, body);
+    await gravarEstadoBlob(body);
     return json({ ok: true });
   } catch (e) {
     console.error('[api/state POST]', e);
     return json(
       {
-        error: 'REDIS_UNAVAILABLE',
+        error: 'STORAGE_UNAVAILABLE',
         message: e instanceof Error ? e.message : String(e)
       },
       503

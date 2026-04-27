@@ -169,7 +169,7 @@
     if (modo === 'loading') el.textContent = 'Sincronizando com o servidor…';
     else if (modo === 'ok') el.textContent = 'Dados compartilhados: todos veem a mesma informação ao acessar o site.';
     else if (modo === 'dirty') el.textContent = 'Há alterações locais; serão gravadas em instantes.';
-    else if (modo === 'erro') el.textContent = 'Não foi possível sincronizar. Confira Redis (Upstash) e Blob na Vercel.';
+    else if (modo === 'erro') el.textContent = 'Não foi possível sincronizar. Configure o Vercel Blob (BLOB_READ_WRITE_TOKEN) nas variáveis de ambiente.';
     else el.textContent = '';
   }
 
