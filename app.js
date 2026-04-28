@@ -6,8 +6,8 @@
   }
 
   const CHAVE_STORAGE = 'gerenciamento-processos';
-  const API_STORAGE_URL = '/.netlify/functions/processos';
-  const API_ANEXOS_URL = '/.netlify/functions/anexos';
+  const API_STORAGE_URL = '/api/processos';
+  const API_ANEXOS_URL = '/api/anexos';
   const VERSAO_SCHEMA = 2;
   const DEBOUNCE_GRAFICO_MS = 300;
   const INTERVALO_ATUALIZACAO_REMOTA_MS = 15000;
