@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Gerenciamento de Processos</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-container">
+    <header class="header" role="banner">
+      <h1 id="titulo-principal">Gerenciamento de Processos</h1>
+      <p class="status-servidor" id="status-servidor" aria-live="polite"></p>
+    </header>
+
+    <main class="main" role="main">
+      <!-- Lista de processos -->
+      <section class="card card-processos" aria-labelledby="titulo-meus-processos">
+        <div class="cabecalho-lista">
+          <h2 id="titulo-meus-processos">Meus Processos</h2>
+          <button type="button" class="btn btn-primario" id="btn-novo-processo" aria-describedby="desc-novo-processo">Novo processo</button>
+        </div>
+        <p id="desc-novo-processo" class="visually-hidden">Cria um novo projeto para acompanhar</p>
+        <div class="lista-processos" id="lista-processos" role="tablist" aria-label="Processos disponíveis">
+          <!-- Preenchido via JS -->
+        </div>
+        <p class="mensagem-vazia" id="mensagem-nenhum-processo" hidden>Nenhum processo. Clique em "Novo processo" para começar.</p>
+      </section>
+
+      <!-- Formulário do Processo (dados do processo selecionado) -->
+      <section class="card" id="secao-dados-processo" aria-labelledby="titulo-processo">
+        <h2 id="titulo-processo">Dados do Processo</h2>
+        <form id="form-processo" class="form-processo" novalidate>
+          <div class="campo">
+            <label for="nome-processo">Nome do processo <span class="obrigatorio">*</span></label>
+            <input type="text" id="nome-processo" name="nome-processo" required minlength="3" maxlength="200" placeholder="Ex.: Implantação de Sistema" autocomplete="off">
+            <span class="erro-campo" id="erro-nome-processo" role="alert" aria-live="polite"></span>
+          </div>
+          <div class="campo">
+            <label for="data-go-live">Data do go live</label>
+            <input type="date" id="data-go-live" name="data-go-live" aria-describedby="desc-go-live">
+            <span id="desc-go-live" class="visually-hidden">Data prevista para o go live do processo</span>
+            <span class="erro-campo" id="erro-data-go-live" role="alert" aria-live="polite"></span>
+          </div>
+          <div class="form-processo-acoes">
+            <button type="submit" class="btn btn-primario">Salvar dados do processo</button>
+            <button type="button" class="btn btn-secundario btn-perigo" id="btn-excluir-processo" aria-describedby="desc-excluir-processo">Excluir processo</button>
+          </div>
+        </form>
+        <p id="desc-excluir-processo" class="visually-hidden">Remove este processo e todas as suas etapas</p>
+      </section>
+
+      <!-- Arquivos anexados (Blob na Vercel) -->
+      <section class="card" aria-labelledby="titulo-anexos">
+        <h2 id="titulo-anexos">Arquivos do processo</h2>
+        <p class="ajuda-anexo">PDF, imagens ou outros arquivos ficam no armazenamento da Vercel; qualquer pessoa com o link do site pode enviar e baixar.</p>
+        <div class="botoes-util">
+          <label class="btn btn-secundario btn-file">
+            Enviar arquivo
+            <input type="file" id="input-anexos" name="anexos" hidden>
+          </label>
+        </div>
+        <ul class="lista-anexos" id="lista-anexos" aria-label="Lista de arquivos anexados"></ul>
+      </section>
+
+      <!-- Formulário de Nova Etapa -->
+      <section class="card" aria-labelledby="titulo-etapa">
+        <h2 id="titulo-etapa">Nova Etapa</h2>
+        <form id="form-etapa" class="form-etapa" novalidate>
+          <div class="grid-form">
+            <div class="campo">
+              <label for="nome-etapa">Nome da etapa <span class="obrigatorio">*</span></label>
+              <input type="text" id="nome-etapa" name="nome-etapa" required minlength="3" maxlength="200" placeholder="Ex.: Levantamento de requisitos" autocomplete="off">
+              <span class="erro-campo" id="erro-nome-etapa" role="alert" aria-live="polite"></span>
+            </div>
+            <div class="campo">
+              <label for="data-inicio-etapa">Data de início <span class="obrigatorio">*</span></label>
+              <input type="date" id="data-inicio-etapa" name="data-inicio-etapa" required>
+              <span class="erro-campo" id="erro-data-inicio-etapa" role="alert" aria-live="polite"></span>
+            </div>
+            <div class="campo">
+              <label for="data-fim-etapa">Data de fim <span class="obrigatorio">*</span></label>
+              <input type="date" id="data-fim-etapa" name="data-fim-etapa" required>
+              <span class="erro-campo" id="erro-data-fim-etapa" role="alert" aria-live="polite"></span>
+            </div>
+            <div class="campo">
+              <label for="area-etapa">Área responsável <span class="obrigatorio">*</span></label>
+              <select id="area-etapa" name="area-etapa" required aria-describedby="desc-area">
+                <option value="">Selecione...</option>
+                <option value="Compras">Compras</option>
+                <option value="Financeiro">Financeiro</option>
+                <option value="TI">TI</option>
+                <option value="Operações">Operações</option>
+                <option value="RH">RH</option>
+                <option value="Jurídico">Jurídico</option>
+                <option value="Comercial">Comercial</option>
+                <option value="Qualidade">Qualidade</option>
+                <option value="Outro">Outro...</option>
+              </select>
+              <span id="desc-area" class="visually-hidden">Escolha a área ou Outro para informar outra área</span>
+              <div class="campo-outro" id="container-outro" hidden>
+                <label for="area-outro">Especifique a área</label>
+                <input type="text" id="area-outro" name="area-outro" maxlength="100" placeholder="Nome da área" autocomplete="off">
+                <span class="erro-campo" id="erro-area-outro" role="alert" aria-live="polite"></span>
+              </div>
+              <span class="erro-campo" id="erro-area-etapa" role="alert" aria-live="polite"></span>
+            </div>
+            <div class="campo">
+              <label for="status-etapa">Status da etapa</label>
+              <select id="status-etapa" name="status-etapa" aria-describedby="desc-status">
+                <option value="Não iniciado">Não iniciado</option>
+                <option value="Em andamento">Em andamento</option>
+                <option value="Concluído">Concluído</option>
+                <option value="Pausado">Pausado</option>
+                <option value="Cancelado">Cancelado</option>
+              </select>
+              <span id="desc-status" class="visually-hidden">Define o status atual da etapa</span>
+            </div>
+          </div>
+          <button type="submit" class="btn btn-primario" id="btn-adicionar-etapa">Adicionar etapa</button>
+        </form>
+      </section>
+
+      <!-- Lista/Tabela de Etapas -->
+      <section class="card" aria-labelledby="titulo-lista">
+        <div class="cabecalho-lista">
+          <h2 id="titulo-lista">Etapas do Processo</h2>
+          <div class="acoes-lista">
+            <button type="button" class="btn btn-secundario" id="btn-toggle-etapas" aria-expanded="true" aria-controls="conteudo-etapas">Ocultar</button>
+            <button type="button" class="btn btn-secundario btn-perigo" id="btn-limpar-tudo" aria-describedby="desc-limpar">Limpar tudo</button>
+          </div>
+        </div>
+        <div id="conteudo-etapas">
+          <p id="desc-limpar" class="visually-hidden">Remove todas as etapas após confirmação</p>
+          <div class="tabela-wrapper" role="region" aria-label="Tabela de etapas">
+            <table class="tabela-etapas" id="tabela-etapas">
+              <thead>
+                <tr>
+                  <th scope="col">#</th>
+                  <th scope="col">Nome da etapa</th>
+                  <th scope="col">Data início</th>
+                  <th scope="col">Data fim</th>
+                  <th scope="col">Área responsável</th>
+                  <th scope="col">Status</th>
+                  <th scope="col">Ações</th>
+                </tr>
+              </thead>
+              <tbody id="corpo-tabela">
+                <!-- Preenchido via JS -->
+              </tbody>
+            </table>
+          </div>
+          <p class="mensagem-vazia" id="mensagem-etapas-vazias" hidden>Nenhuma etapa cadastrada. Adicione etapas acima.</p>
+        </div>
+      </section>
+
+      <!-- Gráfico de Evolução -->
+      <section class="card card-grafico" aria-labelledby="titulo-grafico">
+        <h2 id="titulo-grafico">Evolução do Processo (etapas planejadas)</h2>
+        <div class="grafico-container" id="grafico-container">
+          <canvas id="grafico-evolucao" role="img" aria-label="Gráfico de evolução do processo: curva cumulativa de etapas, marcas por etapa e linha vertical indicando a data de hoje (Hoje). Período até hoje em azul claro; após hoje em cinza."></canvas>
+          <div class="grafico-rotulos" id="grafico-rotulos" aria-hidden="true"></div>
+        </div>
+        <p class="placeholder-grafico" id="placeholder-grafico" hidden>Adicione etapas para visualizar o gráfico de evolução.</p>
+      </section>
+
+      <!-- Persistência e Utilitários -->
+      <section class="card" aria-labelledby="titulo-dados">
+        <h2 id="titulo-dados">Exportar / Importar</h2>
+        <div class="botoes-util">
+          <button type="button" class="btn btn-secundario" id="btn-exportar-json">Exportar JSON</button>
+          <label class="btn btn-secundario btn-file">
+            Importar JSON
+            <input type="file" id="input-importar" accept=".json,application/json" hidden>
+          </label>
+        </div>
+      </section>
+    </main>
+
+    <!-- Toast / Feedback -->
+    <div id="toast-container" class="toast-container" role="status" aria-live="polite" aria-atomic="true"></div>
+
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation"></script>
+  <script src="app.js"></script>
+</body>
+</html>
