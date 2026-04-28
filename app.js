@@ -5,29 +5,27 @@
     Chart.register(window.chartjsPluginAnnotation);
   }
 
+  const CHAVE_STORAGE = 'gerenciamento-processos';
+  const API_STORAGE_URL = '/api/processos';
+  const API_ANEXOS_URL = '/api/anexos';
   const VERSAO_SCHEMA = 2;
   const DEBOUNCE_GRAFICO_MS = 300;
-  const DEBOUNCE_PERSIST_MS = 600;
-  const INTERVALO_POLL_MS = 12000;
-
-  let persistTimer = null;
-  let persistInFlight = false;
-  let dirty = false;
-  let lastSyncedJson = '';
+  const INTERVALO_ATUALIZACAO_REMOTA_MS = 15000;
 
   const AREAS_PREDEFINIDAS = [
-    'Compras', 'Financeiro', 'TI', 'Operações', 'RH', 'Jurídico', 'Comercial', 'Qualidade'
+    'Compras', 'Financeiro', 'Suporte Shop9', 'TI Projetos', 'Operações', 'RH', 'Jurídico', 'Comercial', 'Qualidade'
   ];
 
   const STATUS_ETAPA = ['Não iniciado', 'Em andamento', 'Concluído', 'Pausado', 'Cancelado'];
   const STATUS_ETAPA_PADRAO = 'Não iniciado';
+  const EXTENSOES_ANEXO_PERMITIDAS = ['pdf', 'xls', 'xlsx', 'ppt', 'pptx'];
 
   const DADOS_EXEMPLO = {
     processo: { nome: 'Implantação de Sistema', dataGoLive: '2026-03-25' },
     etapas: [
       { id: null, nome: 'Mapeamento de processos', dataInicio: '2026-03-01', dataFim: '2026-03-05', area: 'Qualidade', status: 'Não iniciado' },
       { id: null, nome: 'Aquisição de licenças', dataInicio: '2026-03-05', dataFim: '2026-03-08', area: 'Compras', status: 'Não iniciado' },
-      { id: null, nome: 'Instalação do ambiente', dataInicio: '2026-03-10', dataFim: '2026-03-15', area: 'TI', status: 'Não iniciado' },
+      { id: null, nome: 'Instalação do ambiente', dataInicio: '2026-03-10', dataFim: '2026-03-15', area: 'Suporte Shop9', status: 'Não iniciado' },
       { id: null, nome: 'Treinamento dos usuários', dataInicio: '2026-03-18', dataFim: '2026-03-22', area: 'RH', status: 'Não iniciado' },
       { id: null, nome: 'Go-live', dataInicio: '2026-03-25', dataFim: '2026-03-31', area: 'Operações', status: 'Não iniciado' }
     ],
@@ -63,6 +61,10 @@
   let timeoutGrafico = null;
   let idEtapaEditando = null;
   let etapasVisiveis = true;
+  let ultimoPayloadPendente = null;
+  let sincronizacaoEmAndamento = false;
+  let falhaSincronizacaoNotificada = false;
+  let armazenamentoLocalIndisponivel = false;
 
   // --- Funções puras ---
 
@@ -75,6 +77,71 @@
     const [y, m, d] = iso.split('-');
     if (!d) return iso;
     return `${d.padStart(2, '0')}/${m.padStart(2, '0')}/${y}`;
+  }
+
+  function obterExtensaoArquivo(nomeArquivo) {
+    if (!nomeArquivo || typeof nomeArquivo !== 'string') return '';
+    const partes = nomeArquivo.toLowerCase().split('.');
+    return partes.length > 1 ? partes.pop() : '';
+  }
+
+  function formatarTamanhoArquivo(bytes) {
+    const valor = Number(bytes);
+    if (!Number.isFinite(valor) || valor <= 0) return '0 B';
+    if (valor < 1024) return `${valor} B`;
+    if (valor < 1024 * 1024) return `${(valor / 1024).toFixed(1)} KB`;
+    return `${(valor / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+  function arquivoPermitido(nomeArquivo) {
+    const ext = obterExtensaoArquivo(nomeArquivo);
+    return EXTENSOES_ANEXO_PERMITIDAS.includes(ext);
+  }
+
+  function lerArquivoComoBase64(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const dataUrl = typeof reader.result === 'string' ? reader.result : '';
+        const separador = dataUrl.indexOf(',');
+        if (separador < 0) {
+          reject(new Error('Formato de arquivo inválido.'));
+          return;
+        }
+        resolve(dataUrl.slice(separador + 1));
+      };
+      reader.onerror = () => reject(new Error('Erro ao ler o arquivo.'));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function construirUrlDownloadAnexo(anexo) {
+    if (!anexo || typeof anexo !== 'object') return '#';
+    if (typeof anexo.storageKey === 'string' && anexo.storageKey) {
+      const nome = typeof anexo.nome === 'string' && anexo.nome ? anexo.nome : 'arquivo';
+      return API_ANEXOS_URL + '?key=' + encodeURIComponent(anexo.storageKey) + '&nome=' + encodeURIComponent(nome);
+    }
+    if (typeof anexo.dataUrl === 'string' && anexo.dataUrl) return anexo.dataUrl;
+    return '#';
+  }
+
+  function normalizarAnexos(anexos) {
+    return (Array.isArray(anexos) ? anexos : [])
+      .filter(anexo => anexo && typeof anexo.nome === 'string')
+      .filter(anexo =>
+        (typeof anexo.storageKey === 'string' && anexo.storageKey) ||
+        (typeof anexo.dataUrl === 'string' && anexo.dataUrl)
+      )
+      .filter(anexo => arquivoPermitido(anexo.nome))
+      .map(anexo => ({
+        id: anexo.id && typeof anexo.id === 'string' ? anexo.id : gerarId(),
+        nome: anexo.nome.trim() || 'arquivo',
+        tipo: typeof anexo.tipo === 'string' ? anexo.tipo : '',
+        tamanho: Number.isFinite(Number(anexo.tamanho)) ? Number(anexo.tamanho) : 0,
+        storageKey: typeof anexo.storageKey === 'string' ? anexo.storageKey : '',
+        dataUrl: typeof anexo.dataUrl === 'string' ? anexo.dataUrl : '',
+        enviadoEm: typeof anexo.enviadoEm === 'string' ? anexo.enviadoEm : new Date().toISOString()
+      }));
   }
 
   function ordenarEtapasPorData(etapas) {
@@ -163,23 +230,21 @@
     return hoje.getFullYear() + '-' + String(hoje.getMonth() + 1).padStart(2, '0') + '-' + String(hoje.getDate()).padStart(2, '0');
   }
 
-  function atualizarIndicadorSync(modo) {
-    const el = document.getElementById('status-servidor');
-    if (!el) return;
-    if (modo === 'loading') el.textContent = 'Sincronizando com o servidor…';
-    else if (modo === 'ok') el.textContent = 'Dados compartilhados: todos veem a mesma informação ao acessar o site.';
-    else if (modo === 'dirty') el.textContent = 'Há alterações locais; serão gravadas em instantes.';
-    else if (modo === 'erro') el.textContent = 'Não foi possível sincronizar. Configure o Vercel Blob (BLOB_READ_WRITE_TOKEN) nas variáveis de ambiente.';
-    else el.textContent = '';
-  }
-
-  function buildPayload() {
+  function montarPayload() {
     return {
       processos: estado.processos.map(pr => ({
         id: pr.id,
         nome: pr.nome,
         dataGoLive: pr.dataGoLive || '',
-        anexos: normalizarAnexos(pr.anexos || []),
+        anexos: (Array.isArray(pr.anexos) ? pr.anexos : []).map(a => ({
+          id: a.id,
+          nome: a.nome,
+          tipo: a.tipo || '',
+          tamanho: a.tamanho || 0,
+          storageKey: a.storageKey || '',
+          dataUrl: a.storageKey ? '' : (a.dataUrl || ''),
+          enviadoEm: a.enviadoEm || ''
+        })),
         etapas: (Array.isArray(pr.etapas) ? pr.etapas : []).map(e => ({
           id: e.id,
           nome: e.nome,
@@ -194,59 +259,108 @@
     };
   }
 
-  async function persistirEstado(opts) {
-    const silent = opts && opts.silent;
-    persistInFlight = true;
-    atualizarIndicadorSync('loading');
+  function montarPayloadLocalSemArquivos(payload) {
+    return {
+      processos: (payload.processos || []).map(pr => ({
+        id: pr.id,
+        nome: pr.nome,
+        dataGoLive: pr.dataGoLive || '',
+        anexos: [],
+        etapas: pr.etapas || []
+      })),
+      processoAtualId: payload.processoAtualId,
+      versao: payload.versao
+    };
+  }
+
+  async function salvarRemoto(payload) {
+    const resposta = await fetch(API_STORAGE_URL, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (!resposta.ok) {
+      throw new Error('Falha ao persistir dados no servidor.');
+    }
+  }
+
+  async function enviarAnexoRemoto(file, processoId) {
+    const conteudoBase64 = await lerArquivoComoBase64(file);
+    const resposta = await fetch(API_ANEXOS_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        processoId: processoId || 'sem-processo',
+        nome: file.name,
+        tipo: file.type || '',
+        conteudoBase64
+      })
+    });
+    if (!resposta.ok) {
+      throw new Error('Falha ao enviar anexo para o servidor.');
+    }
+    return resposta.json();
+  }
+
+  async function excluirAnexoRemoto(storageKey) {
+    if (!storageKey) return;
     try {
-      const payload = buildPayload();
-      const r = await fetch('/api/state', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-        body: JSON.stringify(payload)
-      });
-      const body = await r.json().catch(() => ({}));
-      if (!r.ok) {
-        throw new Error(body.message || body.error || 'HTTP ' + r.status);
+      await fetch(API_ANEXOS_URL + '?key=' + encodeURIComponent(storageKey), { method: 'DELETE' });
+    } catch (_) {
+      // A remoção remota pode falhar sem bloquear remoção local da lista.
+    }
+  }
+
+  async function sincronizarPendencias() {
+    if (sincronizacaoEmAndamento) return;
+    sincronizacaoEmAndamento = true;
+    try {
+      while (ultimoPayloadPendente) {
+        const payload = ultimoPayloadPendente;
+        ultimoPayloadPendente = null;
+        try {
+          await salvarRemoto(payload);
+          if (falhaSincronizacaoNotificada) {
+            mostrarToast('Sincronização restabelecida.', 'sucesso');
+          }
+          falhaSincronizacaoNotificada = false;
+        } catch (err) {
+          ultimoPayloadPendente = payload;
+          if (!falhaSincronizacaoNotificada) {
+            mostrarToast('Não foi possível sincronizar os dados no servidor.', 'erro');
+            falhaSincronizacaoNotificada = true;
+          }
+          break;
+        }
       }
-      lastSyncedJson = JSON.stringify(payload);
-      dirty = false;
-      atualizarIndicadorSync('ok');
-      if (!silent) mostrarToast('Salvo no servidor.', 'sucesso');
-    } catch (e) {
-      atualizarIndicadorSync('erro');
-      mostrarToast('Erro ao salvar no servidor: ' + (e && e.message ? e.message : String(e)), 'erro');
     } finally {
-      persistInFlight = false;
+      sincronizacaoEmAndamento = false;
     }
   }
 
   function salvar() {
-    dirty = true;
-    atualizarIndicadorSync('dirty');
-    if (persistTimer) clearTimeout(persistTimer);
-    persistTimer = setTimeout(() => {
-      persistTimer = null;
-      persistirEstado({ silent: true });
-    }, DEBOUNCE_PERSIST_MS);
-  }
-
-  async function persistirImediato(opts) {
-    if (persistTimer) {
-      clearTimeout(persistTimer);
-      persistTimer = null;
+    const payload = montarPayload();
+    if (!armazenamentoLocalIndisponivel) {
+      try {
+        const payloadLocal = montarPayloadLocalSemArquivos(payload);
+        localStorage.setItem(CHAVE_STORAGE, JSON.stringify(payloadLocal));
+      } catch (_) {
+        armazenamentoLocalIndisponivel = true;
+        mostrarToast('Não foi possível salvar cache local.', 'erro');
+      }
     }
-    await persistirEstado(opts);
+    ultimoPayloadPendente = payload;
+    sincronizarPendencias();
   }
 
   function normalizarEtapas(etapas) {
     return (Array.isArray(etapas) ? etapas : [])
-      .filter(e => e && typeof e.nome === 'string' && (e.data || e.dataInicio))
+      .filter(e => e && typeof e.nome === 'string')
       .map(e => ({
         id: e.id && typeof e.id === 'string' ? e.id : gerarId(),
         nome: e.nome.trim(),
-        dataInicio: e.dataInicio || e.data,
-        dataFim: e.dataFim != null && e.dataFim !== '' ? e.dataFim : (e.data || e.dataInicio),
+        dataInicio: e.dataInicio != null ? e.dataInicio : (e.data || ''),
+        dataFim: e.dataFim != null && e.dataFim !== '' ? e.dataFim : (e.data || (e.dataInicio || '')),
         area: typeof e.area === 'string' ? e.area.trim() : 'Operações',
         status: e.status && STATUS_ETAPA.includes(e.status) ? e.status : STATUS_ETAPA_PADRAO
       }));
@@ -256,28 +370,15 @@
     const nome = opt && typeof opt.nome === 'string' ? opt.nome : 'Novo processo';
     const dataGoLive = opt && typeof opt.dataGoLive === 'string' ? opt.dataGoLive : '';
     const etapas = opt && Array.isArray(opt.etapas) ? normalizarEtapas(opt.etapas) : [];
-    return { id: gerarId(), nome, dataGoLive, etapas, anexos: [] };
-  }
-
-  function normalizarAnexos(arr) {
-    if (!Array.isArray(arr)) return [];
-    return arr
-      .filter(a => a && typeof a.url === 'string' && /^https?:\/\//i.test(a.url))
-      .map(a => ({
-        id: a.id && typeof a.id === 'string' ? a.id : gerarId(),
-        nome: typeof a.nome === 'string' ? a.nome : 'Arquivo',
-        url: a.url,
-        uploadedAt: typeof a.uploadedAt === 'string' ? a.uploadedAt : ''
-      }));
+    const anexos = opt && Array.isArray(opt.anexos) ? normalizarAnexos(opt.anexos) : [];
+    return { id: gerarId(), nome, dataGoLive, anexos, etapas };
   }
 
   function removerProcessosPadraoNovo() {
     const antes = estado.processos.length;
     estado.processos = estado.processos.filter(pr => {
       const nomePadrao = (pr.nome || '').trim() === 'Novo processo';
-      const semEtapas = !Array.isArray(pr.etapas) || pr.etapas.length === 0;
-      const semAnexos = !Array.isArray(pr.anexos) || pr.anexos.length === 0;
-      const semConteudo = (!pr.dataGoLive || pr.dataGoLive.trim() === '') && semEtapas && semAnexos;
+      const semConteudo = (!pr.dataGoLive || pr.dataGoLive.trim() === '') && (!Array.isArray(pr.etapas) || pr.etapas.length === 0);
       return !(nomePadrao && semConteudo);
     });
     if (estado.processos.length === 0) return;
@@ -289,101 +390,98 @@
     }
   }
 
-  function seedExemploMemoria() {
-    const primeiro = criarProcesso({
-      nome: DADOS_EXEMPLO.processo.nome,
-      dataGoLive: DADOS_EXEMPLO.processo.dataGoLive || '',
-      etapas: DADOS_EXEMPLO.etapas
-    });
-    estado = { processos: [primeiro], processoAtualId: primeiro.id, versao: VERSAO_SCHEMA };
-  }
-
-  function aplicarDadosCarregados(data) {
-    if (!data || typeof data !== 'object') {
-      seedExemploMemoria();
-      return;
-    }
+  function aplicarEstadoPersistido(data) {
+    if (!data || typeof data !== 'object') throw new Error('Formato inválido.');
     const ver = data.versao == null ? 1 : data.versao;
     if (Array.isArray(data.processos) && data.processos.length > 0) {
       const processos = data.processos.map(pr => ({
         id: pr.id && typeof pr.id === 'string' ? pr.id : gerarId(),
         nome: typeof pr.nome === 'string' ? pr.nome : 'Sem nome',
         dataGoLive: typeof pr.dataGoLive === 'string' ? pr.dataGoLive : '',
-        anexos: normalizarAnexos(pr.anexos),
+        anexos: normalizarAnexos(pr.anexos || []),
         etapas: normalizarEtapas(pr.etapas || [])
       }));
       let processoAtualId = processos[0].id;
       if (data.processoAtualId && processos.some(p => p.id === data.processoAtualId)) processoAtualId = data.processoAtualId;
       estado = { processos, processoAtualId, versao: ver };
-    } else {
+      return;
+    }
+    if (data.processo || data.etapas) {
       const processoUnico = criarProcesso({
         nome: data.processo && typeof data.processo.nome === 'string' ? data.processo.nome : '',
         dataGoLive: data.processo && typeof data.processo.dataGoLive === 'string' ? data.processo.dataGoLive : '',
+        anexos: data.processo && Array.isArray(data.processo.anexos) ? data.processo.anexos : [],
         etapas: data.etapas || []
       });
       estado = { processos: [processoUnico], processoAtualId: processoUnico.id, versao: VERSAO_SCHEMA };
+      return;
     }
+    throw new Error('Estrutura não reconhecida.');
   }
 
-  async function carregarDoServidor() {
-    atualizarIndicadorSync('loading');
+  async function carregar() {
     try {
-      const r = await fetch('/api/state', { cache: 'no-store', headers: { Accept: 'application/json' } });
-      const data = await r.json().catch(() => null);
-      if (!r.ok) {
-        const msg = (data && (data.message || data.error)) || 'Erro ao carregar dados do servidor.';
-        mostrarToast(msg, 'erro');
-        seedExemploMemoria();
-        await persistirEstado({ silent: true });
-        atualizarIndicadorSync('erro');
+      const resposta = await fetch(API_STORAGE_URL, { method: 'GET' });
+      if (resposta.ok) {
+        const remoto = await resposta.json();
+        aplicarEstadoPersistido(remoto);
+        try {
+          localStorage.setItem(CHAVE_STORAGE, JSON.stringify(montarPayload()));
+        } catch (_) {
+          // Mantém funcionamento mesmo sem permissão de localStorage.
+        }
         return;
       }
-      if (data == null) {
-        seedExemploMemoria();
-        await persistirEstado({ silent: true });
-      } else if (typeof data === 'object' && data.error) {
-        seedExemploMemoria();
-        await persistirEstado({ silent: true });
-      } else if (Array.isArray(data.processos) && data.processos.length === 0) {
-        seedExemploMemoria();
-        await persistirEstado({ silent: true });
-      } else {
-        aplicarDadosCarregados(data);
+    } catch (_) {
+      // Em caso de indisponibilidade do backend, usa fallback local.
+    }
+
+    try {
+      const raw = localStorage.getItem(CHAVE_STORAGE);
+      if (!raw) {
+        usarDadosExemplo();
+        return;
       }
-      lastSyncedJson = JSON.stringify(buildPayload());
-      dirty = false;
-      atualizarIndicadorSync('ok');
+      const local = JSON.parse(raw);
+      aplicarEstadoPersistido(local);
+      salvar();
     } catch (e) {
-      mostrarToast('Erro de rede ao carregar.', 'erro');
-      seedExemploMemoria();
-      atualizarIndicadorSync('erro');
+      usarDadosExemplo();
     }
   }
 
-  async function tentarSincronizarRemoto() {
-    if (document.visibilityState !== 'visible') return;
-    if (dirty || persistInFlight) return;
+  async function atualizarDoServidorSilenciosamente() {
+    if (ultimoPayloadPendente || sincronizacaoEmAndamento) return;
     try {
-      const r = await fetch('/api/state', { cache: 'no-store', headers: { Accept: 'application/json' } });
-      if (!r.ok) return;
-      const data = await r.json();
-      if (data == null || typeof data !== 'object' || Array.isArray(data)) return;
-      if (data.error || !Array.isArray(data.processos)) return;
-      const antes = JSON.stringify(buildPayload());
-      aplicarDadosCarregados(data);
-      const depois = JSON.stringify(buildPayload());
-      if (antes === depois) return;
-      lastSyncedJson = depois;
+      const resposta = await fetch(API_STORAGE_URL, { method: 'GET' });
+      if (!resposta.ok) return;
+      const remoto = await resposta.json();
+      const snapshotLocal = JSON.stringify(montarPayload());
+      const snapshotRemoto = JSON.stringify(remoto);
+      if (snapshotRemoto === snapshotLocal) return;
+
+      aplicarEstadoPersistido(remoto);
       renderizarListaProcessos();
       sincronizarUI();
-      mostrarToast('Lista atualizada (outro usuário alterou os dados).', 'sucesso');
-    } catch (e) {
-      /* silencioso */
+      try {
+        localStorage.setItem(CHAVE_STORAGE, JSON.stringify(montarPayload()));
+      } catch (_) {
+        // Sem impacto funcional se o navegador bloquear localStorage.
+      }
+      mostrarToast('Dados atualizados com alterações de outro usuário.', 'sucesso');
+    } catch (_) {
+      // Atualização periódica deve ser silenciosa em caso de falha.
     }
   }
 
   function usarDadosExemplo() {
-    seedExemploMemoria();
+    const primeiro = criarProcesso({
+      nome: DADOS_EXEMPLO.processo.nome,
+      dataGoLive: DADOS_EXEMPLO.processo.dataGoLive || '',
+      etapas: DADOS_EXEMPLO.etapas
+    });
+    estado = { processos: [primeiro], processoAtualId: primeiro.id, versao: VERSAO_SCHEMA };
+    salvar();
   }
 
   function validarSchemaImportacao(obj) {
@@ -394,12 +492,22 @@
         if (!pr || typeof pr.nome !== 'string') return false;
         if (pr.dataGoLive != null && typeof pr.dataGoLive !== 'string') return false;
         if (pr.anexos != null && !Array.isArray(pr.anexos)) return false;
+        if (pr.anexos) {
+          for (const a of pr.anexos) {
+            if (!a || typeof a.nome !== 'string') return false;
+            const possuiOrigemArquivo =
+              (typeof a.dataUrl === 'string' && a.dataUrl) ||
+              (typeof a.storageKey === 'string' && a.storageKey);
+            if (!possuiOrigemArquivo) return false;
+          }
+        }
         if (pr.etapas != null && !Array.isArray(pr.etapas)) return false;
         if (pr.etapas) {
           for (const e of pr.etapas) {
             if (!e || typeof e.nome !== 'string') return false;
-            const temData = (e.data && typeof e.data === 'string') || (e.dataInicio && typeof e.dataInicio === 'string');
-            if (!temData) return false;
+            if (e.data != null && typeof e.data !== 'string') return false;
+            if (e.dataInicio != null && typeof e.dataInicio !== 'string') return false;
+            if (e.dataFim != null && typeof e.dataFim !== 'string') return false;
             if (e.area != null && typeof e.area !== 'string') return false;
           }
         }
@@ -409,13 +517,24 @@
     if (obj.processo != null) {
       if (typeof obj.processo !== 'object' || typeof obj.processo.nome !== 'string') return false;
       if (obj.processo.dataGoLive != null && typeof obj.processo.dataGoLive !== 'string') return false;
+      if (obj.processo.anexos != null && !Array.isArray(obj.processo.anexos)) return false;
+      if (obj.processo.anexos) {
+        for (const a of obj.processo.anexos) {
+          if (!a || typeof a.nome !== 'string') return false;
+          const possuiOrigemArquivo =
+            (typeof a.dataUrl === 'string' && a.dataUrl) ||
+            (typeof a.storageKey === 'string' && a.storageKey);
+          if (!possuiOrigemArquivo) return false;
+        }
+      }
     }
     if (obj.etapas != null) {
       if (!Array.isArray(obj.etapas)) return false;
       for (const e of obj.etapas) {
         if (!e || typeof e.nome !== 'string') return false;
-        const temData = (e.data && typeof e.data === 'string') || (e.dataInicio && typeof e.dataInicio === 'string');
-        if (!temData) return false;
+        if (e.data != null && typeof e.data !== 'string') return false;
+        if (e.dataInicio != null && typeof e.dataInicio !== 'string') return false;
+        if (e.dataFim != null && typeof e.dataFim !== 'string') return false;
         if (e.area != null && typeof e.area !== 'string') return false;
       }
     }
@@ -427,15 +546,23 @@
     listaProcessos: document.getElementById('lista-processos'),
     btnNovoProcesso: document.getElementById('btn-novo-processo'),
     mensagemNenhumProcesso: document.getElementById('mensagem-nenhum-processo'),
+    indicadorTotalProcessos: document.getElementById('indicador-total-processos'),
+    indicadoresStatusProcessos: document.getElementById('indicadores-status-processos'),
     btnExcluirProcesso: document.getElementById('btn-excluir-processo'),
     secaoDadosProcesso: document.getElementById('secao-dados-processo'),
     nomeProcesso: document.getElementById('nome-processo'),
     dataGoLive: document.getElementById('data-go-live'),
+    dataGoLiveNaoDefinido: document.getElementById('data-go-live-nao-definido'),
+    inputAnexoProcesso: document.getElementById('input-anexo-processo'),
+    listaAnexosProcesso: document.getElementById('lista-anexos-processo'),
+    mensagemAnexosVazios: document.getElementById('mensagem-anexos-vazios'),
     formProcesso: document.getElementById('form-processo'),
     formEtapa: document.getElementById('form-etapa'),
     nomeEtapa: document.getElementById('nome-etapa'),
     dataInicioEtapa: document.getElementById('data-inicio-etapa'),
+    dataInicioEtapaNaoDefinido: document.getElementById('data-inicio-etapa-nao-definido'),
     dataFimEtapa: document.getElementById('data-fim-etapa'),
+    dataFimEtapaNaoDefinido: document.getElementById('data-fim-etapa-nao-definido'),
     areaEtapa: document.getElementById('area-etapa'),
     containerOutro: document.getElementById('container-outro'),
     areaOutro: document.getElementById('area-outro'),
@@ -451,11 +578,77 @@
     btnLimparTudo: document.getElementById('btn-limpar-tudo'),
     btnExportarJson: document.getElementById('btn-exportar-json'),
     inputImportar: document.getElementById('input-importar'),
-    inputAnexos: document.getElementById('input-anexos'),
-    listaAnexos: document.getElementById('lista-anexos'),
     toastContainer: document.getElementById('toast-container'),
     btnAdicionarEtapa: document.getElementById('btn-adicionar-etapa')
   };
+
+  function calcularStatusProcesso(etapas) {
+    const lista = Array.isArray(etapas) ? etapas : [];
+    if (lista.length === 0) return STATUS_ETAPA_PADRAO;
+
+    const contagem = {};
+    STATUS_ETAPA.forEach(status => {
+      contagem[status] = 0;
+    });
+
+    lista.forEach(etapa => {
+      const status = STATUS_ETAPA.includes(etapa.status) ? etapa.status : STATUS_ETAPA_PADRAO;
+      contagem[status] += 1;
+    });
+
+    if (contagem['Em andamento'] > 0) return 'Em andamento';
+    if (contagem['Pausado'] > 0) return 'Pausado';
+    if (contagem['Não iniciado'] === lista.length) return 'Não iniciado';
+    if (contagem['Concluído'] === lista.length) return 'Concluído';
+    if (contagem['Cancelado'] === lista.length) return 'Cancelado';
+    if (contagem['Concluído'] > 0 && contagem['Não iniciado'] > 0) return 'Em andamento';
+    if (contagem['Não iniciado'] > 0) return 'Não iniciado';
+    if (contagem['Concluído'] > 0) return 'Concluído';
+    return 'Cancelado';
+  }
+
+  function renderizarPainelIndicadores() {
+    if (!ref.indicadorTotalProcessos || !ref.indicadoresStatusProcessos) return;
+
+    const totalProcessos = estado.processos.length;
+    ref.indicadorTotalProcessos.textContent = String(totalProcessos);
+
+    const contagemPorStatus = {};
+    const nomesPorStatus = {};
+    STATUS_ETAPA.forEach(status => {
+      contagemPorStatus[status] = 0;
+      nomesPorStatus[status] = [];
+    });
+
+    estado.processos.forEach(processo => {
+      const statusProcesso = calcularStatusProcesso(processo.etapas);
+      contagemPorStatus[statusProcesso] += 1;
+      nomesPorStatus[statusProcesso].push((processo.nome || 'Sem nome').trim() || 'Sem nome');
+    });
+
+    ref.indicadoresStatusProcessos.innerHTML = STATUS_ETAPA.map(status => (
+      (function() {
+        const nomes = nomesPorStatus[status];
+        const listaNomesHtml = nomes.length > 0
+          ? (
+            '<ul class="status-processos-lista">' +
+              nomes.map(nome => '<li title="' + escapeHtml(nome) + '">' + escapeHtml(nome) + '</li>').join('') +
+            '</ul>'
+          )
+          : '<p class="status-processos-vazio">Sem processos</p>';
+
+        return (
+      '<article class="status-item">' +
+        '<div class="status-topo">' +
+          '<strong class="status-valor">' + contagemPorStatus[status] + '</strong>' +
+          '<span class="status-label">' + escapeHtml(status) + '</span>' +
+        '</div>' +
+        listaNomesHtml +
+      '</article>'
+        );
+      })()
+    )).join('');
+  }
 
   const erros = {
     nomeProcesso: document.getElementById('erro-nome-processo'),
@@ -466,6 +659,63 @@
     areaEtapa: document.getElementById('erro-area-etapa'),
     areaOutro: document.getElementById('erro-area-outro')
   };
+
+  function renderizarAnexosProcesso() {
+    if (!ref.listaAnexosProcesso || !ref.mensagemAnexosVazios) return;
+    const proc = getProcessoAtual();
+    const anexos = proc && Array.isArray(proc.anexos) ? proc.anexos : [];
+
+    ref.listaAnexosProcesso.innerHTML = '';
+    ref.mensagemAnexosVazios.hidden = anexos.length > 0;
+
+    anexos.forEach(anexo => {
+      const urlDownload = construirUrlDownloadAnexo(anexo);
+      const item = document.createElement('li');
+      item.className = 'item-anexo-processo';
+      item.innerHTML =
+        '<div class="anexo-info">' +
+          '<span class="anexo-nome" title="' + escapeHtml(anexo.nome) + '">' + escapeHtml(anexo.nome) + '</span>' +
+          '<span class="anexo-meta">' + escapeHtml(formatarTamanhoArquivo(anexo.tamanho)) + '</span>' +
+        '</div>' +
+        '<div class="anexo-acoes">' +
+          '<a class="btn btn-secundario" href="' + urlDownload + '" download="' + escapeHtml(anexo.nome) + '">Baixar</a>' +
+          '<button type="button" class="btn btn-perigo btn-remover-anexo" data-id="' + escapeHtml(anexo.id) + '">Remover</button>' +
+        '</div>';
+      ref.listaAnexosProcesso.appendChild(item);
+    });
+
+    ref.listaAnexosProcesso.querySelectorAll('.btn-remover-anexo').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const processoAtual = getProcessoAtual();
+        if (!processoAtual) return;
+        const anexoRemovido = (processoAtual.anexos || []).find(anexo => anexo.id === btn.dataset.id);
+        processoAtual.anexos = (processoAtual.anexos || []).filter(anexo => anexo.id !== btn.dataset.id);
+        if (anexoRemovido && anexoRemovido.storageKey) {
+          await excluirAnexoRemoto(anexoRemovido.storageKey);
+        }
+        salvar();
+        renderizarAnexosProcesso();
+        mostrarToast('Anexo removido.', 'sucesso');
+      });
+    });
+  }
+
+  function garantirOpcaoNomeEtapa(nomeEtapa) {
+    const customAtual = ref.nomeEtapa.querySelector('option[data-custom="true"]');
+    if (customAtual) customAtual.remove();
+
+    const valor = (nomeEtapa || '').trim();
+    if (!valor) return;
+
+    const existe = Array.from(ref.nomeEtapa.options).some(opt => opt.value === valor);
+    if (existe) return;
+
+    const opt = document.createElement('option');
+    opt.value = valor;
+    opt.textContent = valor + ' (atual)';
+    opt.dataset.custom = 'true';
+    ref.nomeEtapa.appendChild(opt);
+  }
 
   // --- Toast ---
   function mostrarToast(mensagem, tipo) {
@@ -494,6 +744,27 @@
     return true;
   }
 
+  function atualizarEstadoDataGoLive() {
+    const naoDefinido = Boolean(ref.dataGoLiveNaoDefinido && ref.dataGoLiveNaoDefinido.checked);
+    ref.dataGoLive.disabled = naoDefinido;
+    if (naoDefinido) {
+      ref.dataGoLive.value = '';
+      ref.dataGoLive.classList.remove('invalido');
+      ref.dataGoLive.parentElement.classList.remove('invalido');
+      erros.dataGoLive.textContent = '';
+    }
+  }
+
+  if (ref.dataGoLiveNaoDefinido) {
+    ref.dataGoLiveNaoDefinido.addEventListener('change', atualizarEstadoDataGoLive);
+  }
+  ref.dataGoLive.addEventListener('input', () => {
+    if (ref.dataGoLive.value && ref.dataGoLiveNaoDefinido && ref.dataGoLiveNaoDefinido.checked) {
+      ref.dataGoLiveNaoDefinido.checked = false;
+      atualizarEstadoDataGoLive();
+    }
+  });
+
   ref.nomeProcesso.addEventListener('blur', validarNomeProcesso);
 
   // --- Form processo ---
@@ -503,10 +774,53 @@
     if (!proc) return;
     if (!validarNomeProcesso()) return;
     proc.nome = ref.nomeProcesso.value.trim();
-    proc.dataGoLive = (ref.dataGoLive.value || '').trim();
+    proc.dataGoLive = ref.dataGoLiveNaoDefinido && ref.dataGoLiveNaoDefinido.checked
+      ? ''
+      : (ref.dataGoLive.value || '').trim();
     salvar();
     renderizarListaProcessos();
     mostrarToast('Dados do processo salvos.', 'sucesso');
+  });
+
+  ref.inputAnexoProcesso.addEventListener('change', async (e) => {
+    const proc = getProcessoAtual();
+    if (!proc) return;
+    const arquivos = Array.from((e.target.files && e.target.files.length ? e.target.files : []));
+    if (!arquivos.length) return;
+
+    const invalidos = arquivos.filter(file => !arquivoPermitido(file.name));
+    if (invalidos.length > 0) {
+      mostrarToast('Um ou mais arquivos têm formato inválido. Envie PDF, Excel ou PowerPoint.', 'erro');
+      ref.inputAnexoProcesso.value = '';
+      return;
+    }
+
+    let anexados = 0;
+    try {
+      for (const file of arquivos) {
+        const remoto = await enviarAnexoRemoto(file, proc.id);
+        const novoAnexo = {
+          id: remoto.id || gerarId(),
+          nome: remoto.nome || file.name,
+          tipo: remoto.tipo || file.type || '',
+          tamanho: Number.isFinite(Number(remoto.tamanho)) ? Number(remoto.tamanho) : (file.size || 0),
+          storageKey: remoto.storageKey || '',
+          dataUrl: '',
+          enviadoEm: remoto.enviadoEm || new Date().toISOString()
+        };
+        proc.anexos = [...(Array.isArray(proc.anexos) ? proc.anexos : []), novoAnexo];
+        anexados += 1;
+      }
+      if (anexados > 0) {
+        salvar();
+        renderizarAnexosProcesso();
+        mostrarToast(anexados > 1 ? (anexados + ' documentos anexados.') : 'Documento anexado.', 'sucesso');
+      }
+    } catch (_) {
+      mostrarToast('Não foi possível anexar todos os arquivos no servidor.', 'erro');
+    } finally {
+      ref.inputAnexoProcesso.value = '';
+    }
   });
 
   // --- Área "Outro" ---
@@ -521,16 +835,74 @@
 
   ref.areaEtapa.addEventListener('change', atualizarVisibilidadeOutro);
 
+  function atualizarEstadoDatasEtapa() {
+    const inicioNaoDefinido = Boolean(ref.dataInicioEtapaNaoDefinido && ref.dataInicioEtapaNaoDefinido.checked);
+    const fimNaoDefinido = Boolean(ref.dataFimEtapaNaoDefinido && ref.dataFimEtapaNaoDefinido.checked);
+
+    ref.dataInicioEtapa.disabled = inicioNaoDefinido;
+    ref.dataFimEtapa.disabled = fimNaoDefinido;
+
+    if (inicioNaoDefinido) {
+      ref.dataInicioEtapa.value = '';
+      erros.dataInicioEtapa.textContent = '';
+      ref.dataInicioEtapa.classList.remove('invalido');
+      ref.dataInicioEtapa.parentElement.classList.remove('invalido');
+    }
+
+    if (fimNaoDefinido) {
+      ref.dataFimEtapa.value = '';
+      erros.dataFimEtapa.textContent = '';
+      ref.dataFimEtapa.classList.remove('invalido');
+      ref.dataFimEtapa.parentElement.classList.remove('invalido');
+    }
+  }
+
+  if (ref.dataInicioEtapaNaoDefinido) {
+    ref.dataInicioEtapaNaoDefinido.addEventListener('change', atualizarEstadoDatasEtapa);
+  }
+  if (ref.dataFimEtapaNaoDefinido) {
+    ref.dataFimEtapaNaoDefinido.addEventListener('change', atualizarEstadoDatasEtapa);
+  }
+
+  ref.dataInicioEtapa.addEventListener('input', () => {
+    if (ref.dataInicioEtapa.value && ref.dataInicioEtapaNaoDefinido && ref.dataInicioEtapaNaoDefinido.checked) {
+      ref.dataInicioEtapaNaoDefinido.checked = false;
+      atualizarEstadoDatasEtapa();
+    }
+  });
+  ref.dataFimEtapa.addEventListener('input', () => {
+    if (ref.dataFimEtapa.value && ref.dataFimEtapaNaoDefinido && ref.dataFimEtapaNaoDefinido.checked) {
+      ref.dataFimEtapaNaoDefinido.checked = false;
+      atualizarEstadoDatasEtapa();
+    }
+  });
+
   function getAreaFinal() {
     if (ref.areaEtapa.value !== 'Outro') return ref.areaEtapa.value;
     return (ref.areaOutro.value || '').trim();
   }
 
+  function nomesEtapaIguais(a, b) {
+    return (a || '').trim().localeCompare((b || '').trim(), 'pt-BR', { sensitivity: 'base' }) === 0;
+  }
+
+  function existeEtapaComMesmoNome(processo, nomeEtapa, idIgnorar) {
+    if (!processo || !Array.isArray(processo.etapas)) return false;
+    return processo.etapas.some(etapa =>
+      etapa &&
+      etapa.id !== idIgnorar &&
+      nomesEtapaIguais(etapa.nome, nomeEtapa)
+    );
+  }
+
   function validarFormEtapa() {
     let ok = true;
+    const proc = getProcessoAtual();
     const nome = (ref.nomeEtapa.value || '').trim();
-    const dataInicio = ref.dataInicioEtapa.value;
-    const dataFim = ref.dataFimEtapa.value;
+    const inicioNaoDefinido = Boolean(ref.dataInicioEtapaNaoDefinido && ref.dataInicioEtapaNaoDefinido.checked);
+    const fimNaoDefinido = Boolean(ref.dataFimEtapaNaoDefinido && ref.dataFimEtapaNaoDefinido.checked);
+    const dataInicio = inicioNaoDefinido ? '' : ref.dataInicioEtapa.value;
+    const dataFim = fimNaoDefinido ? '' : ref.dataFimEtapa.value;
     const areaSelect = ref.areaEtapa.value;
     const areaOutroVal = (ref.areaOutro.value || '').trim();
 
@@ -550,19 +922,24 @@
     ref.areaOutro.classList.remove('invalido');
     ref.areaOutro.parentElement?.classList.remove('invalido');
 
-    if (nome.length < 3) {
-      erros.nomeEtapa.textContent = 'Mínimo 3 caracteres.';
+    if (!nome) {
+      erros.nomeEtapa.textContent = 'Selecione o nome da etapa.';
+      ref.nomeEtapa.classList.add('invalido');
+      ref.nomeEtapa.parentElement.classList.add('invalido');
+      ok = false;
+    } else if (existeEtapaComMesmoNome(proc, nome, idEtapaEditando)) {
+      erros.nomeEtapa.textContent = 'Esta etapa já foi adicionada neste processo.';
       ref.nomeEtapa.classList.add('invalido');
       ref.nomeEtapa.parentElement.classList.add('invalido');
       ok = false;
     }
-    if (!dataInicio || isNaN(new Date(dataInicio).getTime())) {
+    if (!inicioNaoDefinido && (!dataInicio || isNaN(new Date(dataInicio).getTime()))) {
       erros.dataInicioEtapa.textContent = 'Informe uma data válida.';
       ref.dataInicioEtapa.classList.add('invalido');
       ref.dataInicioEtapa.parentElement.classList.add('invalido');
       ok = false;
     }
-    if (!dataFim || isNaN(new Date(dataFim).getTime())) {
+    if (!fimNaoDefinido && (!dataFim || isNaN(new Date(dataFim).getTime()))) {
       erros.dataFimEtapa.textContent = 'Informe uma data válida.';
       ref.dataFimEtapa.classList.add('invalido');
       ref.dataFimEtapa.parentElement.classList.add('invalido');
@@ -589,6 +966,10 @@
 
   function limparFormEtapa() {
     ref.formEtapa.reset();
+    garantirOpcaoNomeEtapa('');
+    if (ref.dataInicioEtapaNaoDefinido) ref.dataInicioEtapaNaoDefinido.checked = false;
+    if (ref.dataFimEtapaNaoDefinido) ref.dataFimEtapaNaoDefinido.checked = false;
+    atualizarEstadoDatasEtapa();
     ref.areaOutro.value = '';
     ref.statusEtapa.value = STATUS_ETAPA_PADRAO;
     atualizarVisibilidadeOutro();
@@ -613,8 +994,8 @@
       const etapa = etapas.find(x => x.id === idEtapaEditando);
       if (etapa) {
         etapa.nome = ref.nomeEtapa.value.trim();
-        etapa.dataInicio = ref.dataInicioEtapa.value;
-        etapa.dataFim = ref.dataFimEtapa.value;
+        etapa.dataInicio = ref.dataInicioEtapaNaoDefinido && ref.dataInicioEtapaNaoDefinido.checked ? '' : ref.dataInicioEtapa.value;
+        etapa.dataFim = ref.dataFimEtapaNaoDefinido && ref.dataFimEtapaNaoDefinido.checked ? '' : ref.dataFimEtapa.value;
         etapa.area = getAreaFinal();
         etapa.status = STATUS_ETAPA.includes(ref.statusEtapa.value) ? ref.statusEtapa.value : STATUS_ETAPA_PADRAO;
         mostrarToast('Etapa atualizada.', 'sucesso');
@@ -624,8 +1005,8 @@
       const novaEtapa = {
         id: gerarId(),
         nome: ref.nomeEtapa.value.trim(),
-        dataInicio: ref.dataInicioEtapa.value,
-        dataFim: ref.dataFimEtapa.value,
+        dataInicio: ref.dataInicioEtapaNaoDefinido && ref.dataInicioEtapaNaoDefinido.checked ? '' : ref.dataInicioEtapa.value,
+        dataFim: ref.dataFimEtapaNaoDefinido && ref.dataFimEtapaNaoDefinido.checked ? '' : ref.dataFimEtapa.value,
         area: getAreaFinal(),
         status: STATUS_ETAPA.includes(ref.statusEtapa.value) ? ref.statusEtapa.value : STATUS_ETAPA_PADRAO
       };
@@ -685,9 +1066,17 @@
     const etapa = proc.etapas.find(e => e.id === id);
     if (!etapa) return;
     idEtapaEditando = id;
+    garantirOpcaoNomeEtapa(etapa.nome);
     ref.nomeEtapa.value = etapa.nome;
     ref.dataInicioEtapa.value = getDataInicio(etapa);
     ref.dataFimEtapa.value = getDataFim(etapa);
+    if (ref.dataInicioEtapaNaoDefinido) {
+      ref.dataInicioEtapaNaoDefinido.checked = !getDataInicio(etapa);
+    }
+    if (ref.dataFimEtapaNaoDefinido) {
+      ref.dataFimEtapaNaoDefinido.checked = !getDataFim(etapa);
+    }
+    atualizarEstadoDatasEtapa();
     ref.areaEtapa.value = AREAS_PREDEFINIDAS.includes(etapa.area) ? etapa.area : 'Outro';
     ref.areaOutro.value = ref.areaEtapa.value === 'Outro' ? etapa.area : '';
     ref.statusEtapa.value = STATUS_ETAPA.includes(etapa.status) ? etapa.status : STATUS_ETAPA_PADRAO;
@@ -942,24 +1331,7 @@
 
   // --- Exportar JSON ---
   ref.btnExportarJson.addEventListener('click', () => {
-    const payload = {
-      processos: estado.processos.map(pr => ({
-        id: pr.id,
-        nome: pr.nome,
-        dataGoLive: pr.dataGoLive || '',
-        anexos: normalizarAnexos(pr.anexos || []),
-        etapas: pr.etapas.map(e => ({
-          id: e.id,
-          nome: e.nome,
-          dataInicio: getDataInicio(e),
-          dataFim: getDataFim(e),
-          area: e.area,
-          status: e.status || STATUS_ETAPA_PADRAO
-        }))
-      })),
-      processoAtualId: estado.processoAtualId,
-      versao: estado.versao
-    };
+    const payload = montarPayload();
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
@@ -975,97 +1347,79 @@
     if (!file) return;
     const reader = new FileReader();
     reader.onload = () => {
-      (async () => {
-        try {
-          const obj = JSON.parse(reader.result);
-          if (!validarSchemaImportacao(obj)) {
-            mostrarToast('Arquivo JSON inválido. Verifique o formato.', 'erro');
-            ref.inputImportar.value = '';
-            return;
-          }
-          if (Array.isArray(obj.processos) && obj.processos.length > 0) {
-            estado.processos = obj.processos.map(pr => ({
-              id: pr.id && typeof pr.id === 'string' ? pr.id : gerarId(),
-              nome: typeof pr.nome === 'string' ? pr.nome : 'Sem nome',
-              dataGoLive: typeof pr.dataGoLive === 'string' ? pr.dataGoLive : '',
-              anexos: normalizarAnexos(pr.anexos),
-              etapas: normalizarEtapas(pr.etapas || [])
-            }));
-            estado.processoAtualId = obj.processoAtualId && estado.processos.some(p => p.id === obj.processoAtualId) ? obj.processoAtualId : estado.processos[0].id;
-          } else {
-            const processoUnico = criarProcesso({
-              nome: obj.processo && typeof obj.processo.nome === 'string' ? obj.processo.nome : '',
-              dataGoLive: obj.processo && typeof obj.processo.dataGoLive === 'string' ? obj.processo.dataGoLive : '',
-              etapas: obj.etapas || []
-            });
-            estado.processos = [processoUnico];
-            estado.processoAtualId = processoUnico.id;
-          }
-          estado.versao = obj.versao != null ? obj.versao : VERSAO_SCHEMA;
-          renderizarListaProcessos();
-          sincronizarUI();
-          limparFormEtapa();
-          idEtapaEditando = null;
-          ref.btnAdicionarEtapa.textContent = 'Adicionar etapa';
-          await persistirImediato({ silent: true });
-          mostrarToast('Dados importados e gravados no servidor.', 'sucesso');
-        } catch (err) {
-          mostrarToast('Erro ao ler o arquivo JSON.', 'erro');
-        } finally {
+      try {
+        const obj = JSON.parse(reader.result);
+        if (!validarSchemaImportacao(obj)) {
+          mostrarToast('Arquivo JSON inválido. Verifique o formato.', 'erro');
           ref.inputImportar.value = '';
+          return;
         }
-      })();
+        if (Array.isArray(obj.processos) && obj.processos.length > 0) {
+          estado.processos = obj.processos.map(pr => ({
+            id: pr.id && typeof pr.id === 'string' ? pr.id : gerarId(),
+            nome: typeof pr.nome === 'string' ? pr.nome : 'Sem nome',
+            dataGoLive: typeof pr.dataGoLive === 'string' ? pr.dataGoLive : '',
+            anexos: normalizarAnexos(pr.anexos || []),
+            etapas: normalizarEtapas(pr.etapas || [])
+          }));
+          estado.processoAtualId = obj.processoAtualId && estado.processos.some(p => p.id === obj.processoAtualId) ? obj.processoAtualId : estado.processos[0].id;
+        } else {
+          const processoUnico = criarProcesso({
+            nome: obj.processo && typeof obj.processo.nome === 'string' ? obj.processo.nome : '',
+            dataGoLive: obj.processo && typeof obj.processo.dataGoLive === 'string' ? obj.processo.dataGoLive : '',
+            anexos: obj.processo && Array.isArray(obj.processo.anexos) ? obj.processo.anexos : [],
+            etapas: obj.etapas || []
+          });
+          estado.processos = [processoUnico];
+          estado.processoAtualId = processoUnico.id;
+        }
+        estado.versao = obj.versao != null ? obj.versao : VERSAO_SCHEMA;
+        salvar();
+        renderizarListaProcessos();
+        sincronizarUI();
+        limparFormEtapa();
+        idEtapaEditando = null;
+        ref.btnAdicionarEtapa.textContent = 'Adicionar etapa';
+        mostrarToast('Dados importados com sucesso.', 'sucesso');
+      } catch (err) {
+        mostrarToast('Erro ao ler o arquivo JSON.', 'erro');
+      }
+      ref.inputImportar.value = '';
     };
     reader.readAsText(file, 'UTF-8');
   });
-
-  // --- Upload de arquivos (Blob na Vercel) ---
-  if (ref.inputAnexos) {
-    ref.inputAnexos.addEventListener('change', (e) => {
-      const input = e.target;
-      const file = input.files[0];
-      input.value = '';
-      if (!file) return;
-      (async () => {
-        const proc = getProcessoAtual();
-        if (!proc) return;
-        try {
-          const fd = new FormData();
-          fd.append('file', file);
-          const r = await fetch('/api/upload', { method: 'POST', body: fd });
-          const j = await r.json().catch(() => ({}));
-          if (!r.ok) throw new Error(j.message || j.error || 'Falha no upload');
-          proc.anexos = proc.anexos || [];
-          proc.anexos.push({
-            id: gerarId(),
-            nome: j.nome || file.name,
-            url: j.url,
-            uploadedAt: new Date().toISOString()
-          });
-          renderizarAnexos();
-          await persistirImediato({ silent: true });
-          mostrarToast('Arquivo enviado; todos os usuários podem acessá-lo.', 'sucesso');
-        } catch (err) {
-          mostrarToast(err.message || 'Erro no envio do arquivo.', 'erro');
-        }
-      })();
-    });
-  }
 
   // --- Lista de processos: renderizar e seleção ---
   function renderizarListaProcessos() {
     ref.listaProcessos.innerHTML = '';
     ref.mensagemNenhumProcesso.hidden = estado.processos.length > 0;
     estado.processos.forEach(pr => {
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'item-processo' + (pr.id === estado.processoAtualId ? ' ativo' : '');
-      btn.setAttribute('role', 'tab');
-      btn.setAttribute('aria-selected', pr.id === estado.processoAtualId ? 'true' : 'false');
-      btn.dataset.id = pr.id;
-      btn.innerHTML = '<span class="nome-processo" title="' + escapeHtml(pr.nome) + '">' + escapeHtml(pr.nome) + '</span>';
-      btn.addEventListener('click', () => selectProcesso(pr.id));
-      ref.listaProcessos.appendChild(btn);
+      const item = document.createElement('div');
+      item.className = 'item-processo' + (pr.id === estado.processoAtualId ? ' ativo' : '');
+      item.dataset.id = pr.id;
+
+      const seletor = document.createElement('button');
+      seletor.type = 'button';
+      seletor.className = 'item-processo-seletor';
+      seletor.setAttribute('role', 'tab');
+      seletor.setAttribute('aria-selected', pr.id === estado.processoAtualId ? 'true' : 'false');
+      seletor.innerHTML = '<span class="nome-processo" title="' + escapeHtml(pr.nome) + '">' + escapeHtml(pr.nome) + '</span>';
+      seletor.addEventListener('click', () => selectProcesso(pr.id));
+      item.appendChild(seletor);
+
+      const anexos = Array.isArray(pr.anexos) ? pr.anexos : [];
+      if (anexos.length > 0) {
+        const anexosEl = document.createElement('div');
+        anexosEl.className = 'item-processo-anexos';
+        anexosEl.innerHTML = anexos.map(anexo => (
+          '<a class="link-anexo-processo" href="' + construirUrlDownloadAnexo(anexo) + '" download="' + escapeHtml(anexo.nome) + '" title="' + escapeHtml(anexo.nome) + '">' +
+            'Documentação' +
+          '</a>'
+        )).join('');
+        item.appendChild(anexosEl);
+      }
+
+      ref.listaProcessos.appendChild(item);
     });
   }
 
@@ -1115,35 +1469,6 @@
   });
 
   // --- Sincronizar UI com estado (processo atual) ---
-  function renderizarAnexos() {
-    if (!ref.listaAnexos) return;
-    const proc = getProcessoAtual();
-    ref.listaAnexos.innerHTML = '';
-    if (!proc) return;
-    const anexos = Array.isArray(proc.anexos) ? proc.anexos : [];
-    anexos.forEach(a => {
-      const li = document.createElement('li');
-      li.className = 'item-anexo';
-      const link = document.createElement('a');
-      link.href = a.url;
-      link.target = '_blank';
-      link.rel = 'noopener noreferrer';
-      link.textContent = a.nome || 'Arquivo';
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'btn btn-secundario btn-perigo';
-      btn.textContent = 'Remover';
-      btn.addEventListener('click', () => {
-        proc.anexos = (proc.anexos || []).filter(x => x.id !== a.id);
-        salvar();
-        renderizarAnexos();
-      });
-      li.appendChild(link);
-      li.appendChild(btn);
-      ref.listaAnexos.appendChild(li);
-    });
-  }
-
   function sincronizarUI() {
     const proc = getProcessoAtual();
     ref.secaoDadosProcesso.hidden = !proc;
@@ -1153,23 +1478,27 @@
     if (proc) {
       ref.nomeProcesso.value = proc.nome || '';
       ref.dataGoLive.value = proc.dataGoLive || '';
+      if (ref.dataGoLiveNaoDefinido) {
+        ref.dataGoLiveNaoDefinido.checked = !proc.dataGoLive;
+      }
+      atualizarEstadoDataGoLive();
     }
+    renderizarAnexosProcesso();
     renderizarTabela();
     atualizarGrafico();
-    renderizarAnexos();
+    renderizarPainelIndicadores();
   }
 
   // --- Inicialização ---
-  (async function inicializar() {
-    await carregarDoServidor();
+  async function inicializar() {
+    await carregar();
     removerProcessosPadraoNovo();
     renderizarListaProcessos();
     sincronizarUI();
     atualizarVisibilidadeOutro();
     atualizarBotaoToggleEtapas();
-    setInterval(tentarSincronizarRemoto, INTERVALO_POLL_MS);
-    document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible') tentarSincronizarRemoto();
-    });
-  })();
+    setInterval(atualizarDoServidorSilenciosamente, INTERVALO_ATUALIZACAO_REMOTA_MS);
+  }
+
+  inicializar();
 })();
