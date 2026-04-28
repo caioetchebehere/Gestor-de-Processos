@@ -1,9 +1,0 @@
-{
-  "name": "gestao-novos-processos",
-  "version": "1.0.0",
-  "private": true,
-  "description": "Gerenciamento de processos com persistencia compartilhada no Netlify.",
-  "dependencies": {
-    "@netlify/blobs": "^8.1.0"
-  }
-}
