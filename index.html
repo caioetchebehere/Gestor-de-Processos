@@ -10,6 +10,7 @@
   <div class="app-container">
     <header class="header" role="banner">
       <h1 id="titulo-principal">Gerenciamento de Processos</h1>
+      <p class="status-servidor" id="status-servidor" aria-live="polite"></p>
     </header>
 
     <main class="main" role="main">
@@ -26,21 +27,6 @@
         <p class="mensagem-vazia" id="mensagem-nenhum-processo" hidden>Nenhum processo. Clique em "Novo processo" para começar.</p>
       </section>
 
-      <!-- Painel de Indicadores -->
-      <section class="card card-indicadores" aria-labelledby="titulo-indicadores">
-        <h2 id="titulo-indicadores">Painel de Processos</h2>
-        <div class="indicadores-grid">
-          <article class="indicador">
-            <span class="indicador-label">Total de processos</span>
-            <strong class="indicador-valor" id="indicador-total-processos">0</strong>
-          </article>
-        </div>
-        <h3 class="subtitulo-indicadores">Processos por status</h3>
-        <div class="status-grid" id="indicadores-status-processos" aria-live="polite">
-          <!-- Preenchido via JS -->
-        </div>
-      </section>
-
       <!-- Formulário do Processo (dados do processo selecionado) -->
       <section class="card" id="secao-dados-processo" aria-labelledby="titulo-processo">
         <h2 id="titulo-processo">Dados do Processo</h2>
@@ -50,12 +36,8 @@
             <input type="text" id="nome-processo" name="nome-processo" required minlength="3" maxlength="200" placeholder="Ex.: Implantação de Sistema" autocomplete="off">
             <span class="erro-campo" id="erro-nome-processo" role="alert" aria-live="polite"></span>
           </div>
-          <div class="campo campo-go-live">
+          <div class="campo">
             <label for="data-go-live">Data do go live</label>
-            <label class="checkbox-opcao" for="data-go-live-nao-definido">
-              <input type="checkbox" id="data-go-live-nao-definido" name="data-go-live-nao-definido">
-              Não definido
-            </label>
             <input type="date" id="data-go-live" name="data-go-live" aria-describedby="desc-go-live">
             <span id="desc-go-live" class="visually-hidden">Data prevista para o go live do processo</span>
             <span class="erro-campo" id="erro-data-go-live" role="alert" aria-live="polite"></span>
@@ -65,25 +47,20 @@
             <button type="button" class="btn btn-secundario btn-perigo" id="btn-excluir-processo" aria-describedby="desc-excluir-processo">Excluir processo</button>
           </div>
         </form>
-        <section class="anexos-processo" aria-labelledby="titulo-anexos-processo">
-          <h3 id="titulo-anexos-processo">Documentação do processo</h3>
-          <p class="anexos-ajuda">Anexe arquivos para consulta (PDF, Excel e PowerPoint).</p>
-          <div class="anexos-acoes">
-            <label class="btn btn-secundario btn-file">
-              Anexar documentação
-              <input
-                type="file"
-                id="input-anexo-processo"
-                class="visually-hidden"
-                multiple
-                accept=".pdf,.xls,.xlsx,.ppt,.pptx,application/pdf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation"
-              >
-            </label>
-          </div>
-          <ul id="lista-anexos-processo" class="lista-anexos-processo"></ul>
-          <p class="mensagem-vazia" id="mensagem-anexos-vazios">Nenhum anexo neste processo.</p>
-        </section>
         <p id="desc-excluir-processo" class="visually-hidden">Remove este processo e todas as suas etapas</p>
+      </section>
+
+      <!-- Arquivos anexados (Blob na Vercel) -->
+      <section class="card" aria-labelledby="titulo-anexos">
+        <h2 id="titulo-anexos">Arquivos do processo</h2>
+        <p class="ajuda-anexo">PDF, imagens ou outros arquivos ficam no armazenamento da Vercel; qualquer pessoa com o link do site pode enviar e baixar.</p>
+        <div class="botoes-util">
+          <label class="btn btn-secundario btn-file">
+            Enviar arquivo
+            <input type="file" id="input-anexos" name="anexos" hidden>
+          </label>
+        </div>
+        <ul class="lista-anexos" id="lista-anexos" aria-label="Lista de arquivos anexados"></ul>
       </section>
 
       <!-- Formulário de Nova Etapa -->
@@ -93,36 +70,17 @@
           <div class="grid-form">
             <div class="campo">
               <label for="nome-etapa">Nome da etapa <span class="obrigatorio">*</span></label>
-              <select id="nome-etapa" name="nome-etapa" required>
-                <option value="">Selecione...</option>
-                <option value="Testes integrados">Testes integrados</option>
-                <option value="Piloto">Piloto</option>
-                <option value="Levantamento de requisitos">Levantamento de requisitos</option>
-                <option value="Rollout">Rollout</option>
-                <option value="Criação de material">Criação de material</option>
-                <option value="Divulgação de material">Divulgação de material</option>
-                <option value="Desenvolvimento - Correção">Desenvolvimento - Correção</option>
-                <option value="Treinamento para Lojas">Treinamento para Lojas</option>
-                <option value="Treinamento para Suporte">Treinamento para Suporte</option>
-              </select>
+              <input type="text" id="nome-etapa" name="nome-etapa" required minlength="3" maxlength="200" placeholder="Ex.: Levantamento de requisitos" autocomplete="off">
               <span class="erro-campo" id="erro-nome-etapa" role="alert" aria-live="polite"></span>
             </div>
-            <div class="campo campo-data-etapa">
-              <label for="data-inicio-etapa">Data de início</label>
-              <input type="date" id="data-inicio-etapa" name="data-inicio-etapa">
-              <label class="checkbox-opcao" for="data-inicio-etapa-nao-definido">
-                <input type="checkbox" id="data-inicio-etapa-nao-definido" name="data-inicio-etapa-nao-definido">
-                Não definido
-              </label>
+            <div class="campo">
+              <label for="data-inicio-etapa">Data de início <span class="obrigatorio">*</span></label>
+              <input type="date" id="data-inicio-etapa" name="data-inicio-etapa" required>
               <span class="erro-campo" id="erro-data-inicio-etapa" role="alert" aria-live="polite"></span>
             </div>
-            <div class="campo campo-data-etapa">
-              <label for="data-fim-etapa">Data de fim</label>
-              <input type="date" id="data-fim-etapa" name="data-fim-etapa">
-              <label class="checkbox-opcao" for="data-fim-etapa-nao-definido">
-                <input type="checkbox" id="data-fim-etapa-nao-definido" name="data-fim-etapa-nao-definido">
-                Não definido
-              </label>
+            <div class="campo">
+              <label for="data-fim-etapa">Data de fim <span class="obrigatorio">*</span></label>
+              <input type="date" id="data-fim-etapa" name="data-fim-etapa" required>
               <span class="erro-campo" id="erro-data-fim-etapa" role="alert" aria-live="polite"></span>
             </div>
             <div class="campo">
@@ -131,8 +89,7 @@
                 <option value="">Selecione...</option>
                 <option value="Compras">Compras</option>
                 <option value="Financeiro">Financeiro</option>
-                <option value="Suporte Shop9">Suporte Shop9</option>
-                <option value="TI Projetos">TI Projetos</option>
+                <option value="TI">TI</option>
                 <option value="Operações">Operações</option>
                 <option value="RH">RH</option>
                 <option value="Jurídico">Jurídico</option>
