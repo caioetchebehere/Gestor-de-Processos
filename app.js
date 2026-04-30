@@ -333,20 +333,15 @@
       if (!r.ok) {
         const msg = (data && (data.message || data.error)) || 'Erro ao carregar dados do servidor.';
         mostrarToast(msg, 'erro');
-        seedExemploMemoria();
-        await persistirEstado({ silent: true });
         atualizarIndicadorSync('erro');
         return;
       }
       if (data == null) {
         seedExemploMemoria();
-        await persistirEstado({ silent: true });
       } else if (typeof data === 'object' && data.error) {
         seedExemploMemoria();
-        await persistirEstado({ silent: true });
       } else if (Array.isArray(data.processos) && data.processos.length === 0) {
         seedExemploMemoria();
-        await persistirEstado({ silent: true });
       } else {
         aplicarDadosCarregados(data);
       }
@@ -449,6 +444,7 @@
     tituloGrafico: document.getElementById('titulo-grafico'),
     btnToggleEtapas: document.getElementById('btn-toggle-etapas'),
     btnLimparTudo: document.getElementById('btn-limpar-tudo'),
+    btnSalvarAgora: document.getElementById('btn-salvar-agora'),
     btnExportarJson: document.getElementById('btn-exportar-json'),
     inputImportar: document.getElementById('input-importar'),
     inputAnexos: document.getElementById('input-anexos'),
@@ -941,6 +937,16 @@
   }
 
   // --- Exportar JSON ---
+  if (ref.btnSalvarAgora) {
+    ref.btnSalvarAgora.addEventListener('click', async () => {
+      if (persistInFlight) {
+        mostrarToast('Sincronização em andamento, aguarde alguns segundos.', 'erro');
+        return;
+      }
+      await persistirImediato({ silent: false });
+    });
+  }
+
   ref.btnExportarJson.addEventListener('click', () => {
     const payload = {
       processos: estado.processos.map(pr => ({
@@ -1159,6 +1165,21 @@
     renderizarAnexos();
   }
 
+  function persistirAoSair() {
+    if (!dirty) return;
+    try {
+      const payload = buildPayload();
+      fetch('/api/state', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify(payload),
+        keepalive: true
+      }).catch(() => {});
+    } catch (e) {
+      /* silencioso */
+    }
+  }
+
   // --- Inicialização ---
   (async function inicializar() {
     await carregarDoServidor();
@@ -1169,7 +1190,9 @@
     atualizarBotaoToggleEtapas();
     setInterval(tentarSincronizarRemoto, INTERVALO_POLL_MS);
     document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') persistirAoSair();
       if (document.visibilityState === 'visible') tentarSincronizarRemoto();
     });
+    window.addEventListener('pagehide', persistirAoSair);
   })();
 })();

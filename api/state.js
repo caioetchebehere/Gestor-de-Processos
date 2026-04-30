@@ -18,7 +18,7 @@ function json(body, status = 200) {
 
 async function lerEstadoBlob() {
   const token = getBlobToken();
-  const { blobs } = await list({ prefix: 'gestao-processos/app-state', token, limit: 10 });
+  const { blobs } = await list({ prefix: BLOB_STATE_PATH, token, limit: 10 });
   const blob = blobs.find(b => b.pathname === BLOB_STATE_PATH);
   if (!blob) return null;
   const res = await fetch(blob.downloadUrl);
